@@ -107,7 +107,7 @@ struct Context<'a> {
 
 impl<'a> Context<'a> {
     fn new(root: &'a Path, target: &'a Path) -> io::Result<Self> {
-        let current_dir = env::current_dir()?;
+        let current_dir = get_current_dir()?;
         let root_path = current_dir.join(root);
         let target_is_file = target.is_file();
         let root_parent = if target.exists() && !root.to_str().unwrap().ends_with("/.") {
@@ -616,4 +616,22 @@ fn build_dir(
 
     builder.create(path)?;
     Ok(())
+}
+
+/// Get the current working directory.
+/// On WASI, getcwd() is not supported, so we use PWD environment variable.
+#[cfg(target_os = "wasi")]
+fn get_current_dir() -> io::Result<PathBuf> {
+    match env::var_os("PWD").map(PathBuf::from) {
+        Some(path) if !path.as_os_str().is_empty() => Ok(path),
+        _ => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "PWD environment variable not set",
+        )),
+    }
+}
+
+#[cfg(not(target_os = "wasi"))]
+fn get_current_dir() -> io::Result<PathBuf> {
+    env::current_dir()
 }

@@ -1184,11 +1184,40 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
 
     let config = Config::from(&matches)?;
 
-    let locs = matches
-        .get_many::<OsString>(options::PATHS)
-        .map_or_else(|| vec![Path::new(".")], |v| v.map(Path::new).collect());
+    // Collect paths from arguments, or use default
+    let locs: Vec<PathBuf> = match matches.get_many::<OsString>(options::PATHS) {
+        Some(paths) => paths.map(PathBuf::from).collect(),
+        None => get_default_paths(),
+    };
+    let locs: Vec<&Path> = locs.iter().map(|p| p.as_path()).collect();
 
     list(locs, &config)
+}
+
+/// Get the default paths when no arguments are provided.
+/// On WASI, getcwd() is not supported, so "." may not work correctly.
+/// We try to use the PWD environment variable as a fallback.
+#[cfg(target_os = "wasi")]
+fn get_default_paths() -> Vec<PathBuf> {
+    // First, try "." - it might work if the runtime supports it
+    if std::fs::metadata(".").is_ok() {
+        return vec![PathBuf::from(".")];
+    }
+
+    // Try PWD environment variable
+    if let Ok(pwd) = std::env::var("PWD") {
+        if !pwd.is_empty() && std::fs::metadata(&pwd).is_ok() {
+            return vec![PathBuf::from(pwd)];
+        }
+    }
+
+    // Fall back to root directory
+    vec![PathBuf::from("/")]
+}
+
+#[cfg(not(target_os = "wasi"))]
+fn get_default_paths() -> Vec<PathBuf> {
+    vec![PathBuf::from(".")]
 }
 
 pub fn uu_app() -> Command {

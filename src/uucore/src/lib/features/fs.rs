@@ -18,6 +18,24 @@ use std::collections::VecDeque;
 use std::env;
 #[cfg(unix)]
 use std::ffi::CString;
+
+/// Get the current working directory.
+/// On WASI, getcwd() is not supported, so we use PWD environment variable.
+#[cfg(target_os = "wasi")]
+fn get_current_dir() -> IOResult<PathBuf> {
+    match env::var_os("PWD").map(PathBuf::from) {
+        Some(path) if !path.as_os_str().is_empty() => Ok(path),
+        _ => Err(Error::new(
+            ErrorKind::NotFound,
+            "PWD environment variable not set",
+        )),
+    }
+}
+
+#[cfg(not(target_os = "wasi"))]
+fn get_current_dir() -> IOResult<PathBuf> {
+    env::current_dir()
+}
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::fs::read_dir;
@@ -417,7 +435,7 @@ pub fn canonicalize<P: AsRef<Path>>(
     let original = if original.is_absolute() {
         original.to_path_buf()
     } else {
-        let current_dir = env::current_dir()?;
+        let current_dir = get_current_dir()?;
         dunce::canonicalize(current_dir)?.join(original)
     };
     let path = if res_mode == ResolveMode::Logical {

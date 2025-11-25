@@ -18,21 +18,36 @@ const OPT_LOGICAL: &str = "logical";
 const OPT_PHYSICAL: &str = "physical";
 
 fn physical_path() -> io::Result<PathBuf> {
-    // std::env::current_dir() is a thin wrapper around libc::getcwd().
-    let path = env::current_dir()?;
-
-    // On Unix, getcwd() must return the physical path:
-    // https://pubs.opengroup.org/onlinepubs/9699919799/functions/getcwd.html
-    #[cfg(unix)]
+    // On WASI, getcwd() is not supported. Use PWD environment variable instead.
+    #[cfg(target_os = "wasi")]
     {
-        Ok(path)
+        match env::var_os("PWD").map(PathBuf::from) {
+            Some(path) if !path.as_os_str().is_empty() => Ok(path),
+            _ => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "PWD environment variable not set",
+            )),
+        }
     }
 
-    // On Windows we have to resolve it.
-    // On other systems we also resolve it, just in case.
-    #[cfg(not(unix))]
+    #[cfg(not(target_os = "wasi"))]
     {
-        path.canonicalize()
+        // std::env::current_dir() is a thin wrapper around libc::getcwd().
+        let path = env::current_dir()?;
+
+        // On Unix, getcwd() must return the physical path:
+        // https://pubs.opengroup.org/onlinepubs/9699919799/functions/getcwd.html
+        #[cfg(unix)]
+        {
+            Ok(path)
+        }
+
+        // On Windows we have to resolve it.
+        // On other systems we also resolve it, just in case.
+        #[cfg(not(unix))]
+        {
+            path.canonicalize()
+        }
     }
 }
 
@@ -43,7 +58,19 @@ fn logical_path() -> io::Result<PathBuf> {
         env::current_dir()
     }
 
-    // If we're not on Windows we do things Unix-style.
+    // On WASI, we can only use PWD environment variable
+    #[cfg(target_os = "wasi")]
+    {
+        match env::var_os("PWD").map(PathBuf::from) {
+            Some(path) if !path.as_os_str().is_empty() => Ok(path),
+            _ => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "PWD environment variable not set",
+            )),
+        }
+    }
+
+    // If we're not on Windows or WASI we do things Unix-style.
     //
     // Typical Unix-like kernels don't actually keep track of the logical working
     // directory. They know the precise directory a process is in, and the getcwd()
@@ -54,7 +81,7 @@ fn logical_path() -> io::Result<PathBuf> {
     // reasonable, and if not then we fall back to the physical path.
     //
     // POSIX: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/pwd.html
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), not(target_os = "wasi")))]
     {
         use std::path::Path;
         fn looks_reasonable(path: &Path) -> bool {
