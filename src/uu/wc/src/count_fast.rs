@@ -240,10 +240,26 @@ pub(crate) fn count_bytes_chars_and_lines_fast<
                     total.bytes += n;
                 }
                 if COUNT_CHARS {
-                    total.chars += bytecount::num_chars(&buf[..n]);
+                    // On WASI, use naive implementation to avoid SIMD
+                    #[cfg(target_os = "wasi")]
+                    {
+                        total.chars += buf[..n].iter().filter(|&&b| (b as i8) >= -0x40).count();
+                    }
+                    #[cfg(not(target_os = "wasi"))]
+                    {
+                        total.chars += bytecount::num_chars(&buf[..n]);
+                    }
                 }
                 if COUNT_LINES {
-                    total.lines += bytecount::count(&buf[..n], b'\n');
+                    // On WASI, use naive implementation to avoid SIMD
+                    #[cfg(target_os = "wasi")]
+                    {
+                        total.lines += buf[..n].iter().filter(|&&b| b == b'\n').count();
+                    }
+                    #[cfg(not(target_os = "wasi"))]
+                    {
+                        total.lines += bytecount::count(&buf[..n], b'\n');
+                    }
                 }
             }
             Err(ref e) if e.kind() == ErrorKind::Interrupted => (),

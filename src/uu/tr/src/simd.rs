@@ -26,6 +26,19 @@ where
     (matches.len() == 1).then(|| matches[0])
 }
 
+/// Helper function to count byte occurrences (WASI-compatible, no SIMD)
+#[cfg(target_os = "wasi")]
+#[inline]
+fn count_byte(haystack: &[u8], needle: u8) -> usize {
+    haystack.iter().filter(|&&b| b == needle).count()
+}
+
+#[cfg(not(target_os = "wasi"))]
+#[inline]
+fn count_byte(haystack: &[u8], needle: u8) -> usize {
+    bytecount::count(haystack, needle)
+}
+
 /// SIMD-optimized single character replacement
 #[inline]
 pub fn process_single_char_replace(
@@ -34,7 +47,7 @@ pub fn process_single_char_replace(
     source_char: u8,
     target_char: u8,
 ) {
-    let count = bytecount::count(input, source_char);
+    let count = count_byte(input, source_char);
     if count == 0 {
         output.extend_from_slice(input);
     } else if count == input.len() {
@@ -50,7 +63,7 @@ pub fn process_single_char_replace(
 
 /// SIMD-optimized delete operation for single character
 pub fn process_single_delete(input: &[u8], output: &mut Vec<u8>, delete_char: u8) {
-    let count = bytecount::count(input, delete_char);
+    let count = count_byte(input, delete_char);
     if count == 0 {
         output.extend_from_slice(input);
     } else if count < input.len() {

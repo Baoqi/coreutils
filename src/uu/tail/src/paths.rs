@@ -197,6 +197,11 @@ impl MetadataExtTail for Metadata {
             // }
             false
         }
+        #[cfg(target_os = "wasi")]
+        {
+            // WASI doesn't have stable inode support, always return false
+            false
+        }
     }
 }
 
