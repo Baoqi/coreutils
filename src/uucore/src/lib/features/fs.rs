@@ -141,15 +141,9 @@ impl FileInformation {
         }
         #[cfg(target_os = "wasi")]
         {
-            // On WASI, we use the canonical path as a unique identifier
-            // since MetadataExt (dev/ino) is unstable
-            let canonical = if dereference {
-                fs::canonicalize(path.as_ref())?
-            } else {
-                // For symlinks, try to get the path without following
-                // If canonicalize fails (broken symlink), use the original path
-                fs::canonicalize(path.as_ref()).unwrap_or_else(|_| path.as_ref().to_path_buf())
-            };
+            // On WASI, canonicalize() is not supported, so we use the path as-is
+            // or try to normalize it manually
+            let canonical = path.as_ref().to_path_buf();
             let metadata = if dereference {
                 fs::metadata(path.as_ref())
             } else {
@@ -436,7 +430,12 @@ pub fn canonicalize<P: AsRef<Path>>(
         original.to_path_buf()
     } else {
         let current_dir = get_current_dir()?;
-        dunce::canonicalize(current_dir)?.join(original)
+        // On WASI, dunce::canonicalize may not work, so just join paths
+        #[cfg(target_os = "wasi")]
+        let base = current_dir;
+        #[cfg(not(target_os = "wasi"))]
+        let base = dunce::canonicalize(current_dir)?;
+        base.join(original)
     };
     let path = if res_mode == ResolveMode::Logical {
         normalize_path(&original)
@@ -772,16 +771,13 @@ pub fn are_hardlinks_to_same_file(source: &Path, target: &Path) -> bool {
 }
 
 /// Checks if two paths are hard links to the same file (WASI version).
-/// On WASI, we compare canonical paths since inode/device info is unstable.
+/// On WASI, canonicalize() is not supported, so we compare paths directly.
+/// This is a simplified check that may not catch all hard link cases.
 #[cfg(target_os = "wasi")]
 pub fn are_hardlinks_to_same_file(source: &Path, target: &Path) -> bool {
-    let (Ok(source_canonical), Ok(target_canonical)) =
-        (fs::canonicalize(source), fs::canonicalize(target))
-    else {
-        return false;
-    };
-
-    source_canonical == target_canonical
+    // On WASI, we can't reliably detect hard links without inode info
+    // Just compare the paths as a basic check
+    source == target
 }
 
 #[cfg(not(any(unix, target_os = "wasi")))]
@@ -811,20 +807,13 @@ pub fn are_hardlinks_or_one_way_symlink_to_same_file(source: &Path, target: &Pat
 }
 
 /// Checks if either two paths are hard links to the same file (WASI version).
-/// On WASI, we compare canonical paths since inode/device info is unstable.
+/// On WASI, canonicalize() is not supported, so we compare paths directly.
+/// This is a simplified check that may not catch all hard link cases.
 #[cfg(target_os = "wasi")]
 pub fn are_hardlinks_or_one_way_symlink_to_same_file(source: &Path, target: &Path) -> bool {
-    // For source, follow symlinks (use canonicalize which resolves symlinks)
-    let Ok(source_canonical) = fs::canonicalize(source) else {
-        return false;
-    };
-    // For target, we need the actual path (not following symlinks if it's a symlink)
-    // But WASI's canonicalize always follows symlinks, so we just compare
-    let Ok(target_canonical) = fs::canonicalize(target) else {
-        return false;
-    };
-
-    source_canonical == target_canonical
+    // On WASI, we can't reliably detect hard links without inode info
+    // Just compare the paths as a basic check
+    source == target
 }
 
 /// Returns true if the passed `path` ends with a path terminator.

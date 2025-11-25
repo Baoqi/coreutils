@@ -1196,17 +1196,13 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
 
 /// Get the default paths when no arguments are provided.
 /// On WASI, getcwd() is not supported, so "." may not work correctly.
-/// We try to use the PWD environment variable as a fallback.
+/// We use the PWD environment variable directly.
 #[cfg(target_os = "wasi")]
 fn get_default_paths() -> Vec<PathBuf> {
-    // First, try "." - it might work if the runtime supports it
-    if std::fs::metadata(".").is_ok() {
-        return vec![PathBuf::from(".")];
-    }
-
-    // Try PWD environment variable
+    // On WASI, "." often doesn't work because getcwd() is not supported.
+    // Use PWD environment variable directly.
     if let Ok(pwd) = std::env::var("PWD") {
-        if !pwd.is_empty() && std::fs::metadata(&pwd).is_ok() {
+        if !pwd.is_empty() {
             return vec![PathBuf::from(pwd)];
         }
     }
@@ -2342,22 +2338,36 @@ fn enter_directory(
 ) -> UResult<()> {
     // Create vec of entries with initial dot files
     let mut entries: Vec<PathData> = if config.files == Files::All {
-        vec![
-            PathData::new(
-                path_data.path().to_path_buf(),
-                None,
-                Some(".".into()),
-                config,
-                false,
-            ),
-            PathData::new(
-                path_data.path().join(".."),
+        let mut dots = vec![PathData::new(
+            path_data.path().to_path_buf(),
+            None,
+            Some(".".into()),
+            config,
+            false,
+        )];
+
+        // On WASI, accessing ".." from root directory causes permission errors
+        // because it's outside the sandbox. Skip ".." if we're at root or if
+        // the parent directory is not accessible.
+        let parent_path = path_data.path().join("..");
+        #[cfg(target_os = "wasi")]
+        let should_add_parent = {
+            // Check if parent is accessible (not outside sandbox)
+            parent_path != Path::new("/..") && fs::metadata(&parent_path).is_ok()
+        };
+        #[cfg(not(target_os = "wasi"))]
+        let should_add_parent = true;
+
+        if should_add_parent {
+            dots.push(PathData::new(
+                parent_path,
                 None,
                 Some("..".into()),
                 config,
                 false,
-            ),
-        ]
+            ));
+        }
+        dots
     } else {
         vec![]
     };
@@ -3355,6 +3365,10 @@ fn create_hyperlink(name: &OsStr, path: &PathData) -> OsString {
     #[cfg(target_os = "wasi")]
     let hostname = "";
 
+    // On WASI, canonicalize is not supported, so use the path as-is
+    #[cfg(target_os = "wasi")]
+    let absolute_path = path.path().to_path_buf();
+    #[cfg(not(target_os = "wasi"))]
     let absolute_path = fs::canonicalize(path.path()).unwrap_or_default();
     let absolute_path = absolute_path.to_string_lossy();
 
