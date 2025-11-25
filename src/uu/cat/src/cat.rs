@@ -25,7 +25,7 @@ use std::os::unix::net::UnixStream;
 use thiserror::Error;
 use uucore::display::Quotable;
 use uucore::error::UResult;
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "wasi")))]
 use uucore::libc;
 use uucore::translate;
 use uucore::{fast_inc::fast_inc_one, format_usage};
@@ -226,7 +226,7 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     // that we don't print any error messages to stderr. Rust ignores SIGPIPE
     // (see https://github.com/rust-lang/rust/issues/62569), so we restore it's
     // default action here.
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(all(not(target_os = "windows"), not(target_os = "wasi")))]
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }

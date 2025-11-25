@@ -10,12 +10,12 @@ use clap::parser::ValuesRef;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "wasi")))]
 use uucore::error::FromIo;
 use uucore::error::{UResult, USimpleError};
 use uucore::translate;
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "wasi")))]
 use uucore::mode;
 use uucore::{display::Quotable, fs::dir_strip_dot_for_creation};
 use uucore::{format_usage, show_if_err};
@@ -49,12 +49,12 @@ pub struct Config<'a> {
     pub context: Option<&'a String>,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "wasi"))]
 fn get_mode(_matches: &ArgMatches) -> Result<u32, String> {
     Ok(DEFAULT_PERM)
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "wasi")))]
 fn get_mode(matches: &ArgMatches) -> Result<u32, String> {
     // Not tested on Windows
     let mut new_mode = DEFAULT_PERM;
@@ -210,9 +210,9 @@ fn chmod(path: &Path, mode: u32) -> UResult<()> {
     )
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "wasi"))]
 fn chmod(_path: &Path, _mode: u32) -> UResult<()> {
-    // chmod on Windows only sets the readonly flag, which isn't even honored on directories
+    // chmod on Windows/WASI only sets the readonly flag, which isn't even honored on directories
     Ok(())
 }
 
@@ -294,7 +294,7 @@ fn create_single_dir(path: &Path, is_parent: bool, config: &Config) -> UResult<(
             } else {
                 config.mode
             };
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "wasi"))]
             let new_mode = config.mode;
 
             chmod(path, new_mode)?;

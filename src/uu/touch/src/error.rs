@@ -28,6 +28,10 @@ pub enum TouchError {
     #[error("{}", translate!("touch-error-windows-stdout-path-failed", "code" => .0.clone()))]
     WindowsStdoutPathError(String),
 
+    /// Touch stdout is not supported on this platform (e.g., WASI)
+    #[error("touching stdout is not supported on this platform")]
+    TouchStdoutNotSupported,
+
     /// An error encountered on a specific file
     #[error("{error}")]
     TouchFileError {

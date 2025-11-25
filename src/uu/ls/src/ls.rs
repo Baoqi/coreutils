@@ -3318,16 +3318,23 @@ fn display_item_name(
 }
 
 fn create_hyperlink(name: &OsStr, path: &PathData) -> OsString {
+    #[cfg(not(target_os = "wasi"))]
     let hostname = hostname::get().unwrap_or_else(|_| OsString::from(""));
+    #[cfg(not(target_os = "wasi"))]
     let hostname = hostname.to_string_lossy();
+    // WASI doesn't have hostname support, use empty string
+    #[cfg(target_os = "wasi")]
+    let hostname = "";
 
     let absolute_path = fs::canonicalize(path.path()).unwrap_or_default();
     let absolute_path = absolute_path.to_string_lossy();
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "wasi")))]
     let unencoded_chars = "_-.:~/";
     #[cfg(target_os = "windows")]
     let unencoded_chars = "_-.:~/\\";
+    #[cfg(target_os = "wasi")]
+    let unencoded_chars = "_-.:~/";
 
     // percentage encoding of path
     let absolute_path: String = absolute_path

@@ -20,10 +20,15 @@ path = "src/wc.rs"
 [dependencies]
 clap = { workspace = true }
 uucore = { workspace = true, features = ["parser", "pipes", "quoting-style"] }
-bytecount = { workspace = true, features = ["runtime-dispatch-simd"] }
 thiserror = { workspace = true }
 unicode-width = { workspace = true }
 fluent = { workspace = true }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+bytecount = { workspace = true, features = ["runtime-dispatch-simd"] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+bytecount = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }

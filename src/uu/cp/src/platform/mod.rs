@@ -24,13 +24,22 @@ mod linux;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub(crate) use self::linux::copy_on_write;
 
+// WASI platform
+#[cfg(target_os = "wasi")]
+mod wasi;
+#[cfg(target_os = "wasi")]
+pub(crate) use self::wasi::copy_on_write;
+
+// Other platforms (Windows, etc.) - but not WASI
 #[cfg(not(any(
     unix,
+    target_os = "wasi",
     any(target_os = "macos", target_os = "linux", target_os = "android")
 )))]
 mod other;
 #[cfg(not(any(
     unix,
+    target_os = "wasi",
     any(target_os = "macos", target_os = "linux", target_os = "android")
 )))]
 pub(crate) use self::other::copy_on_write;

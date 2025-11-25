@@ -46,8 +46,25 @@ macro_rules! has {
 /// Information to uniquely identify a file
 pub struct FileInformation(
     #[cfg(unix)] nix::sys::stat::FileStat,
-    #[cfg(windows)] winapi_util::file::Information,
+    #[cfg(target_os = "windows")] winapi_util::file::Information,
+    // For WASI, we use a simple struct based on file path canonicalization
+    // since WASI doesn't provide stable access to inode/device info
+    #[cfg(target_os = "wasi")] WasiFileInfo,
 );
+
+/// WASI-specific file information struct.
+/// Since WASI's MetadataExt is unstable, we use the canonical path
+/// as a unique identifier for files.
+#[cfg(target_os = "wasi")]
+#[derive(Clone)]
+struct WasiFileInfo {
+    /// Canonical path of the file (used for equality comparison)
+    canonical_path: PathBuf,
+    /// File size
+    size: u64,
+    /// Number of hard links (always 1 on WASI since we can't query it)
+    nlink: u64,
+}
 
 impl FileInformation {
     /// Get information from a currently open file
@@ -62,6 +79,17 @@ impl FileInformation {
     pub fn from_file(file: &impl AsHandleRef) -> IOResult<Self> {
         let info = winapi_util::file::information(file.as_handle_ref())?;
         Ok(Self(info))
+    }
+
+    /// Get information from a currently open file (WASI version)
+    /// Note: WASI doesn't support fstat on arbitrary file descriptors in the same way,
+    /// so we return an error. Use from_path instead.
+    #[cfg(target_os = "wasi")]
+    pub fn from_file<T>(_file: &T) -> IOResult<Self> {
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "from_file is not supported on WASI; use from_path instead",
+        ))
     }
 
     /// Get information for a given path.
@@ -93,6 +121,28 @@ impl FileInformation {
             let file = open_options.read(true).open(path.as_ref())?;
             Self::from_file(&file)
         }
+        #[cfg(target_os = "wasi")]
+        {
+            // On WASI, we use the canonical path as a unique identifier
+            // since MetadataExt (dev/ino) is unstable
+            let canonical = if dereference {
+                fs::canonicalize(path.as_ref())?
+            } else {
+                // For symlinks, try to get the path without following
+                // If canonicalize fails (broken symlink), use the original path
+                fs::canonicalize(path.as_ref()).unwrap_or_else(|_| path.as_ref().to_path_buf())
+            };
+            let metadata = if dereference {
+                fs::metadata(path.as_ref())
+            } else {
+                fs::symlink_metadata(path.as_ref())
+            }?;
+            Ok(Self(WasiFileInfo {
+                canonical_path: canonical,
+                size: metadata.len(),
+                nlink: 1, // WASI doesn't provide stable nlink access
+            }))
+        }
     }
 
     pub fn file_size(&self) -> u64 {
@@ -105,9 +155,13 @@ impl FileInformation {
         {
             self.0.file_size()
         }
+        #[cfg(target_os = "wasi")]
+        {
+            self.0.size
+        }
     }
 
-    #[cfg(windows)]
+    #[cfg(target_os = "windows")]
     pub fn file_index(&self) -> u64 {
         self.0.file_index()
     }
@@ -150,8 +204,10 @@ impl FileInformation {
         return self.0.st_nlink.into();
         #[cfg(target_os = "aix")]
         return self.0.st_nlink.try_into().unwrap();
-        #[cfg(windows)]
+        #[cfg(target_os = "windows")]
         return self.0.number_of_links();
+        #[cfg(target_os = "wasi")]
+        return self.0.nlink;
     }
 
     #[cfg(unix)]
@@ -167,6 +223,12 @@ impl FileInformation {
             not(target_pointer_width = "64")
         ))]
         return self.0.st_ino.into();
+    }
+
+    #[cfg(target_os = "wasi")]
+    pub fn inode(&self) -> u64 {
+        // WASI doesn't provide stable inode access, return 0
+        0
     }
 }
 
@@ -185,6 +247,13 @@ impl PartialEq for FileInformation {
     }
 }
 
+#[cfg(target_os = "wasi")]
+impl PartialEq for FileInformation {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.canonical_path == other.0.canonical_path
+    }
+}
+
 impl Eq for FileInformation {}
 
 impl Hash for FileInformation {
@@ -198,6 +267,10 @@ impl Hash for FileInformation {
         {
             self.0.volume_serial_number().hash(state);
             self.0.file_index().hash(state);
+        }
+        #[cfg(target_os = "wasi")]
+        {
+            self.0.canonical_path.hash(state);
         }
     }
 }
@@ -427,9 +500,34 @@ pub fn canonicalize<P: AsRef<Path>>(
     Ok(result)
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, target_os = "wasi")))]
 /// Display the permissions of a file
 pub fn display_permissions(metadata: &fs::Metadata, display_file_type: bool) -> String {
+    let write = if metadata.permissions().readonly() {
+        '-'
+    } else {
+        'w'
+    };
+
+    if display_file_type {
+        let file_type = if metadata.is_symlink() {
+            'l'
+        } else if metadata.is_dir() {
+            'd'
+        } else {
+            '-'
+        };
+
+        format!("{file_type}r{write}xr{write}xr{write}x")
+    } else {
+        format!("r{write}xr{write}xr{write}x")
+    }
+}
+
+#[cfg(target_os = "wasi")]
+/// Display the permissions of a file (WASI version)
+pub fn display_permissions(metadata: &fs::Metadata, display_file_type: bool) -> String {
+    // WASI has limited permission support, just show basic info
     let write = if metadata.permissions().readonly() {
         '-'
     } else {
@@ -628,7 +726,7 @@ pub fn is_symlink_loop(path: &Path) -> bool {
     false
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, target_os = "wasi")))]
 // Hard link comparison is not supported on non-Unix platforms
 pub fn are_hardlinks_to_same_file(_source: &Path, _target: &Path) -> bool {
     false
@@ -655,7 +753,20 @@ pub fn are_hardlinks_to_same_file(source: &Path, target: &Path) -> bool {
     source_metadata.ino() == target_metadata.ino() && source_metadata.dev() == target_metadata.dev()
 }
 
-#[cfg(not(unix))]
+/// Checks if two paths are hard links to the same file (WASI version).
+/// On WASI, we compare canonical paths since inode/device info is unstable.
+#[cfg(target_os = "wasi")]
+pub fn are_hardlinks_to_same_file(source: &Path, target: &Path) -> bool {
+    let (Ok(source_canonical), Ok(target_canonical)) =
+        (fs::canonicalize(source), fs::canonicalize(target))
+    else {
+        return false;
+    };
+
+    source_canonical == target_canonical
+}
+
+#[cfg(not(any(unix, target_os = "wasi")))]
 pub fn are_hardlinks_or_one_way_symlink_to_same_file(_source: &Path, _target: &Path) -> bool {
     false
 }
@@ -681,6 +792,23 @@ pub fn are_hardlinks_or_one_way_symlink_to_same_file(source: &Path, target: &Pat
     source_metadata.ino() == target_metadata.ino() && source_metadata.dev() == target_metadata.dev()
 }
 
+/// Checks if either two paths are hard links to the same file (WASI version).
+/// On WASI, we compare canonical paths since inode/device info is unstable.
+#[cfg(target_os = "wasi")]
+pub fn are_hardlinks_or_one_way_symlink_to_same_file(source: &Path, target: &Path) -> bool {
+    // For source, follow symlinks (use canonicalize which resolves symlinks)
+    let Ok(source_canonical) = fs::canonicalize(source) else {
+        return false;
+    };
+    // For target, we need the actual path (not following symlinks if it's a symlink)
+    // But WASI's canonicalize always follows symlinks, so we just compare
+    let Ok(target_canonical) = fs::canonicalize(target) else {
+        return false;
+    };
+
+    source_canonical == target_canonical
+}
+
 /// Returns true if the passed `path` ends with a path terminator.
 ///
 /// This function examines the last character of the path to determine
@@ -693,6 +821,15 @@ pub fn are_hardlinks_or_one_way_symlink_to_same_file(source: &Path, target: &Pat
 #[cfg(unix)]
 pub fn path_ends_with_terminator(path: &Path) -> bool {
     use std::os::unix::prelude::OsStrExt;
+    path.as_os_str()
+        .as_bytes()
+        .last()
+        .is_some_and(|&byte| byte == b'/')
+}
+
+#[cfg(target_os = "wasi")]
+pub fn path_ends_with_terminator(path: &Path) -> bool {
+    use std::os::wasi::ffi::OsStrExt;
     path.as_os_str()
         .as_bytes()
         .last()
@@ -727,6 +864,13 @@ pub fn is_stdin_directory(stdin: &Stdin) -> bool {
         mode & S_IFMT == S_IFDIR
     }
 
+    #[cfg(target_os = "wasi")]
+    {
+        // WASI stdin is never a directory
+        let _ = stdin;
+        false
+    }
+
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;
@@ -740,7 +884,7 @@ pub fn is_stdin_directory(stdin: &Stdin) -> bool {
 
 pub mod sane_blksize {
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
     use std::{fs::metadata, path::Path};
 
@@ -764,9 +908,15 @@ pub mod sane_blksize {
     /// If the metadata contain invalid values a meaningful adaption
     /// of that value is done.
     pub fn sane_blksize_from_metadata(_metadata: &std::fs::Metadata) -> u64 {
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(unix)]
         {
             sane_blksize(_metadata.blksize())
+        }
+
+        #[cfg(target_os = "wasi")]
+        {
+            // WASI doesn't have blksize in the same way, use default
+            DEFAULT
         }
 
         #[cfg(target_os = "windows")]

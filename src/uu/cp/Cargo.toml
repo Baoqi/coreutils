@@ -20,9 +20,18 @@ path = "src/cp.rs"
 [dependencies]
 clap = { workspace = true }
 filetime = { workspace = true }
+selinux = { workspace = true, optional = true }
+walkdir = { workspace = true }
+indicatif = { workspace = true }
+thiserror = { workspace = true }
+fluent = { workspace = true }
+
+# Platform-specific dependencies
+[target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 linux-raw-sys = { workspace = true, features = ["ioctl"] }
-selinux = { workspace = true, optional = true }
+xattr = { workspace = true }
+exacl = { workspace = true, optional = true }
 uucore = { workspace = true, features = [
   "backup-control",
   "buf-copy",
@@ -34,14 +43,26 @@ uucore = { workspace = true, features = [
   "mode",
   "update-control",
 ] }
-walkdir = { workspace = true }
-indicatif = { workspace = true }
-thiserror = { workspace = true }
-fluent = { workspace = true }
 
-[target.'cfg(unix)'.dependencies]
-xattr = { workspace = true }
-exacl = { workspace = true, optional = true }
+# WASI-specific dependencies (limited features)
+[target.'cfg(target_os = "wasi")'.dependencies]
+uucore = { workspace = true, features = [
+  "backup-control",
+  "buf-copy",
+  "fs",
+  "parser",
+  "update-control",
+] }
+
+# Windows-specific dependencies
+[target.'cfg(windows)'.dependencies]
+uucore = { workspace = true, features = [
+  "backup-control",
+  "buf-copy",
+  "fs",
+  "parser",
+  "update-control",
+] }
 
 [[bin]]
 name = "cp"

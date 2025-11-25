@@ -19,8 +19,14 @@ path = "src/mkdir.rs"
 
 [dependencies]
 clap = { workspace = true }
-uucore = { workspace = true, features = ["fs", "mode", "fsxattr"] }
 fluent = { workspace = true }
+
+# Platform-specific uucore features
+[target.'cfg(not(target_os = "wasi"))'.dependencies]
+uucore = { workspace = true, features = ["fs", "mode", "fsxattr"] }
+
+[target.'cfg(target_os = "wasi")'.dependencies]
+uucore = { workspace = true, features = ["fs"] }
 
 [features]
 selinux = ["uucore/selinux"]

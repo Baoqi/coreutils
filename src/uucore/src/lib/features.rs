@@ -53,7 +53,8 @@ pub mod version_cmp;
 
 // * (platform-specific) feature-gated modules
 // ** non-windows (i.e. Unix + Fuchsia)
-#[cfg(all(not(windows), feature = "mode"))]
+// mode feature requires libc umask, which is not available on WASI
+#[cfg(all(not(windows), not(target_os = "wasi"), feature = "mode"))]
 pub mod mode;
 
 // ** unix-only

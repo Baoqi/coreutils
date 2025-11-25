@@ -19,6 +19,20 @@ use std::{fmt, io};
 use uucore::fsxattr::copy_xattrs;
 use uucore::translate;
 
+// WASI-specific: define a placeholder for PermissionsExt trait
+#[cfg(target_os = "wasi")]
+#[allow(dead_code)]
+trait WasiPermissionsExt {
+    fn mode(&self) -> u32 {
+        0o644 // Default mode for WASI
+    }
+    fn set_mode(&mut self, _mode: u32) {
+        // No-op on WASI
+    }
+}
+#[cfg(target_os = "wasi")]
+impl WasiPermissionsExt for Permissions {}
+
 use clap::{Arg, ArgAction, ArgMatches, Command, builder::ValueParser, value_parser};
 use filetime::FileTime;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -501,9 +515,13 @@ static PRESERVABLE_ATTRIBUTES: &[&str] = &[
     "all",
 ];
 
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(target_os = "wasi")))]
 static PRESERVABLE_ATTRIBUTES: &[&str] =
     &["mode", "timestamps", "context", "links", "xattr", "all"];
+
+#[cfg(target_os = "wasi")]
+static PRESERVABLE_ATTRIBUTES: &[&str] =
+    &["mode", "timestamps", "links", "all"];
 
 const PRESERVE_DEFAULT_VALUES: &str = if cfg!(unix) {
     "mode,ownership,timestamp"
@@ -1774,9 +1792,22 @@ fn symlink_file(
     dest: &Path,
     symlinked_files: &mut HashSet<FileInformation>,
 ) -> CopyResult<()> {
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
         std::os::unix::fs::symlink(source, dest).map_err(|e| {
+            CpError::IoErrContext(
+                e,
+                translate!("cp-error-cannot-create-symlink",
+                           "dest" => get_filename(dest).unwrap_or("?").quote(),
+                           "source" => get_filename(source).unwrap_or("?").quote()),
+            )
+        })?;
+    }
+    #[cfg(target_os = "wasi")]
+    {
+        // WASI symlink support requires unstable features (wasi_ext)
+        // Fallback: copy the file instead of creating a symlink
+        fs::copy(source, dest).map_err(|e| {
             CpError::IoErrContext(
                 e,
                 translate!("cp-error-cannot-create-symlink",

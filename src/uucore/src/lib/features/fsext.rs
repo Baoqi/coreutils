@@ -565,6 +565,11 @@ pub fn read_fs_list() -> UResult<Vec<MountInfo>> {
         // No method to read mounts, yet
         Ok(Vec::new())
     }
+    #[cfg(target_os = "wasi")]
+    {
+        // WASI doesn't have mount information
+        Ok(Vec::new())
+    }
 }
 
 #[derive(Debug, Clone)]

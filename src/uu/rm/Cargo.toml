@@ -20,15 +20,27 @@ path = "src/rm.rs"
 [dependencies]
 thiserror = { workspace = true }
 clap = { workspace = true }
-uucore = { workspace = true, features = ["fs", "parser", "safe-traversal"] }
 fluent = { workspace = true }
 indicatif = { workspace = true }
 
-[target.'cfg(unix)'.dependencies]
+# safe-traversal is only available on Linux
+[target.'cfg(target_os = "linux")'.dependencies]
+uucore = { workspace = true, features = ["fs", "parser", "safe-traversal"] }
 libc = { workspace = true }
 
+# Non-Linux Unix platforms
+[target.'cfg(all(unix, not(target_os = "linux")))'.dependencies]
+uucore = { workspace = true, features = ["fs", "parser"] }
+libc = { workspace = true }
+
+# Windows
 [target.'cfg(windows)'.dependencies]
+uucore = { workspace = true, features = ["fs", "parser"] }
 windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+
+# WASI
+[target.'cfg(target_os = "wasi")'.dependencies]
+uucore = { workspace = true, features = ["fs", "parser"] }
 
 [[bin]]
 name = "rm"
