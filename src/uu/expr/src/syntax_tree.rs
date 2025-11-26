@@ -9,7 +9,12 @@ use std::{cell::Cell, collections::BTreeMap};
 
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
+
+#[cfg(not(target_os = "wasi"))]
 use onig::{Regex, RegexOptions, Syntax};
+
+#[cfg(target_os = "wasi")]
+use regex::Regex;
 
 use crate::{
     ExprError, ExprResult,
@@ -219,9 +224,15 @@ where
     }
 
     // Check if parsed quantifier is valid
-    let re = Regex::new(r"^([0-9]*,[0-9]*|[0-9]+)$").expect("valid regular expression");
+    #[cfg(not(target_os = "wasi"))]
+    let re = onig::Regex::new(r"^([0-9]*,[0-9]*|[0-9]+)$").expect("valid regular expression");
+    #[cfg(target_os = "wasi")]
+    let re = regex::Regex::new(r"^([0-9]*,[0-9]*|[0-9]+)$").expect("valid regular expression");
     if let Some(captures) = re.captures(&quantifier) {
+        #[cfg(not(target_os = "wasi"))]
         let matched = captures.at(0).unwrap_or_default();
+        #[cfg(target_os = "wasi")]
+        let matched = captures.get(0).map(|m| m.as_str()).unwrap_or_default();
         match matched.split_once(',') {
             Some(("", "")) => Ok(()),
             Some((x, "") | ("", x)) if x.parse::<i16>().is_ok() => Ok(()),
@@ -277,7 +288,8 @@ fn check_posix_regex_errors(pattern: &str) -> ExprResult<()> {
     }
 }
 
-/// Build a regex from a pattern string with locale-aware encoding
+/// Build a regex from a pattern string with locale-aware encoding (non-WASI)
+#[cfg(not(target_os = "wasi"))]
 fn build_regex(pattern_bytes: Vec<u8>) -> ExprResult<(Regex, String)> {
     use onig::EncodedBytes;
     use uucore::i18n::{UEncoding, get_locale_encoding};
@@ -378,7 +390,136 @@ fn build_regex(pattern_bytes: Vec<u8>) -> ExprResult<(Regex, String)> {
     Ok((re, re_string))
 }
 
-/// Find matches in the input using the compiled regex
+/// Build a regex from a pattern string (WASI version using pure Rust regex crate)
+///
+/// This function converts POSIX BRE (Basic Regular Expression) syntax to ERE
+/// (Extended Regular Expression) syntax used by the Rust regex crate.
+#[cfg(target_os = "wasi")]
+fn build_regex(pattern_bytes: Vec<u8>) -> ExprResult<(Regex, String, bool)> {
+    let pattern_str = String::from_utf8(pattern_bytes.clone())
+        .unwrap_or_else(|_| String::from_utf8_lossy(&pattern_bytes).into());
+    check_posix_regex_errors(&pattern_str)?;
+
+    // Convert BRE to ERE syntax for the Rust regex crate
+    let mut re_string = String::with_capacity(pattern_str.len() + 1);
+    let mut pattern_chars = pattern_str.chars().peekable();
+    let mut prev = '\0';
+    let mut prev_is_escaped = false;
+    let mut is_start_of_expression = true;
+    let mut has_capture_group = false;
+
+    // All patterns are anchored so they begin with a caret (^)
+    if pattern_chars.peek() != Some(&'^') {
+        re_string.push('^');
+    }
+
+    while let Some(curr) = pattern_chars.next() {
+        let curr_is_escaped = prev == '\\' && !prev_is_escaped;
+        let is_first_character = prev == '\0';
+
+        match curr {
+            // Character class negation "[^a]"
+            // Explicitly escaped caret "\^"
+            '^' if !is_start_of_expression && !matches!(prev, '[' | '\\') => {
+                re_string.push_str(r"\^");
+            }
+            '$' if !curr_is_escaped && !is_end_of_expression(&pattern_chars) => {
+                re_string.push_str(r"\$");
+            }
+            '\\' if !curr_is_escaped && pattern_chars.peek().is_none() => {
+                return Err(ExprError::TrailingBackslash);
+            }
+            // In BRE, \( and \) are capturing groups, convert to ERE ( and )
+            '(' if curr_is_escaped => {
+                // Remove the backslash we just added
+                if re_string.ends_with('\\') {
+                    let _ = re_string.pop();
+                }
+                re_string.push('(');
+                has_capture_group = true;
+            }
+            ')' if curr_is_escaped => {
+                // Remove the backslash we just added
+                if re_string.ends_with('\\') {
+                    let _ = re_string.pop();
+                }
+                re_string.push(')');
+            }
+            // In BRE, \| is alternation, convert to ERE |
+            '|' if curr_is_escaped => {
+                // Remove the backslash we just added
+                if re_string.ends_with('\\') {
+                    let _ = re_string.pop();
+                }
+                re_string.push('|');
+            }
+            // In BRE, \+ is one or more, convert to ERE +
+            '+' if curr_is_escaped => {
+                // Remove the backslash we just added
+                if re_string.ends_with('\\') {
+                    let _ = re_string.pop();
+                }
+                re_string.push('+');
+            }
+            // In BRE, \? is zero or one, convert to ERE ?
+            '?' if curr_is_escaped => {
+                // Remove the backslash we just added
+                if re_string.ends_with('\\') {
+                    let _ = re_string.pop();
+                }
+                re_string.push('?');
+            }
+            // In BRE, \{ and \} are range quantifiers, convert to ERE { and }
+            '{' if curr_is_escaped => {
+                // Handle '{' literally at the start of an expression
+                if is_start_of_expression {
+                    if re_string.ends_with('\\') {
+                        let _ = re_string.pop();
+                    }
+                    re_string.push_str("\\{");
+                } else {
+                    // Check if the following section is a valid range quantifier
+                    verify_range_quantifier(&pattern_chars)?;
+
+                    // Remove the backslash we just added
+                    if re_string.ends_with('\\') {
+                        let _ = re_string.pop();
+                    }
+                    re_string.push('{');
+                    // Set the lower bound of range quantifier to 0 if it is missing
+                    if pattern_chars.peek() == Some(&',') {
+                        re_string.push('0');
+                    }
+                }
+            }
+            '}' if curr_is_escaped => {
+                // Remove the backslash we just added
+                if re_string.ends_with('\\') {
+                    let _ = re_string.pop();
+                }
+                re_string.push('}');
+            }
+            _ => re_string.push(curr),
+        }
+
+        // Capturing group "\(abc\)"
+        // Alternative pattern "a\|b"
+        is_start_of_expression = curr == '\\' && is_first_character
+            || curr_is_escaped && matches!(curr, '(' | '|')
+            || curr == '\\' && prev_is_escaped && matches!(prev, '(' | '|');
+
+        prev_is_escaped = curr_is_escaped;
+        prev = curr;
+    }
+
+    // Create regex using Rust regex crate
+    let re = Regex::new(&re_string).map_err(|_| ExprError::InvalidRegexExpression)?;
+
+    Ok((re, re_string, has_capture_group))
+}
+
+/// Find matches in the input using the compiled regex (non-WASI)
+#[cfg(not(target_os = "wasi"))]
 fn find_match(regex: Regex, re_string: String, left_bytes: Vec<u8>) -> ExprResult<String> {
     use onig::EncodedBytes;
     use uucore::i18n::{UEncoding, get_locale_encoding};
@@ -517,7 +658,45 @@ fn find_match(regex: Regex, re_string: String, left_bytes: Vec<u8>) -> ExprResul
     Ok(result)
 }
 
-/// Evaluate a match expression with locale-aware regex matching
+/// Find matches in the input using the compiled regex (WASI version)
+#[cfg(target_os = "wasi")]
+fn find_match(
+    regex: Regex,
+    _re_string: String,
+    left_bytes: Vec<u8>,
+    has_capture_group: bool,
+) -> ExprResult<String> {
+    // Convert bytes to string for matching
+    let left_str = String::from_utf8_lossy(&left_bytes);
+
+    if let Some(captures) = regex.captures(&left_str) {
+        if has_capture_group {
+            // Get first capture group
+            if let Some(m) = captures.get(1) {
+                Ok(m.as_str().to_string())
+            } else {
+                Ok(String::new())
+            }
+        } else {
+            // Count characters in the match
+            if let Some(m) = captures.get(0) {
+                Ok(m.as_str().chars().count().to_string())
+            } else {
+                Ok("0".to_string())
+            }
+        }
+    } else {
+        // No match
+        if has_capture_group {
+            Ok(String::new())
+        } else {
+            Ok("0".to_string())
+        }
+    }
+}
+
+/// Evaluate a match expression with locale-aware regex matching (non-WASI)
+#[cfg(not(target_os = "wasi"))]
 fn evaluate_match_expression(left_bytes: Vec<u8>, right_bytes: Vec<u8>) -> ExprResult<NumOrStr> {
     let (regex, re_string) = build_regex(right_bytes)?;
 
@@ -546,6 +725,14 @@ fn evaluate_match_expression(left_bytes: Vec<u8>, right_bytes: Vec<u8>) -> ExprR
     }
 
     let result = find_match(regex, re_string, left_bytes)?;
+    Ok(result.into())
+}
+
+/// Evaluate a match expression (WASI version)
+#[cfg(target_os = "wasi")]
+fn evaluate_match_expression(left_bytes: Vec<u8>, right_bytes: Vec<u8>) -> ExprResult<NumOrStr> {
+    let (regex, re_string, has_capture_group) = build_regex(right_bytes)?;
+    let result = find_match(regex, re_string, left_bytes, has_capture_group)?;
     Ok(result.into())
 }
 

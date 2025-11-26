@@ -21,10 +21,15 @@ path = "src/expr.rs"
 clap = { workspace = true }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
-onig = { workspace = true }
 uucore = { workspace = true, features = ["i18n-collator"] }
 thiserror = { workspace = true }
 fluent = { workspace = true }
+
+[target.'cfg(not(target_os = "wasi"))'.dependencies]
+onig = { workspace = true }
+
+[target.'cfg(target_os = "wasi")'.dependencies]
+regex = { workspace = true }
 
 [[bin]]
 name = "expr"
