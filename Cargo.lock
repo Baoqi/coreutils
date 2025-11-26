@@ -3606,6 +3606,7 @@ dependencies = [
  "num-bigint",
  "num-traits",
  "onig",
+ "regex",
  "thiserror 2.0.19",
  "uucore",
 ]

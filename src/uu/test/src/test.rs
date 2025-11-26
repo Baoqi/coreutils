@@ -18,7 +18,7 @@ use std::os::unix::fs::MetadataExt;
 use uucore::display::Quotable;
 use uucore::error::{UResult, USimpleError};
 use uucore::format_usage;
-#[cfg(not(windows))]
+#[cfg(unix)]
 use uucore::process::{getegid, geteuid};
 
 use uucore::translate;
@@ -254,7 +254,7 @@ enum PathCondition {
     Executable,
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
 fn path(path: &OsStr, condition: &PathCondition) -> bool {
     use std::fs::Metadata;
     use std::os::unix::fs::FileTypeExt;
@@ -312,6 +312,49 @@ fn path(path: &OsStr, condition: &PathCondition) -> bool {
         PathCondition::UserIdFlag => metadata.mode() & S_ISUID != 0,
         PathCondition::Writable => perm(metadata, Permission::Write),
         PathCondition::Executable => perm(metadata, Permission::Execute),
+    }
+}
+
+#[cfg(target_os = "wasi")]
+fn path(path: &OsStr, condition: &PathCondition) -> bool {
+    let metadata = if condition == &PathCondition::SymLink {
+        fs::symlink_metadata(path)
+    } else {
+        fs::metadata(path)
+    };
+
+    let Ok(metadata) = metadata else {
+        return false;
+    };
+
+    let file_type = metadata.file_type();
+
+    match condition {
+        // WASI doesn't support block/char devices in the sandbox, return false
+        PathCondition::BlockSpecial => false,
+        PathCondition::CharacterSpecial => false,
+        PathCondition::Directory => file_type.is_dir(),
+        PathCondition::Exists => true,
+        PathCondition::ExistsModifiedLastRead => {
+            metadata.accessed().unwrap() < metadata.modified().unwrap()
+        }
+        PathCondition::Regular => file_type.is_file(),
+        // WASI doesn't have traditional Unix permission bits, return false for permission-related checks
+        PathCondition::GroupIdFlag => false,
+        PathCondition::GroupOwns => false,
+        PathCondition::SymLink => metadata.file_type().is_symlink(),
+        PathCondition::Sticky => false,
+        PathCondition::UserOwns => false,
+        // WASI doesn't support FIFOs in the sandbox
+        PathCondition::Fifo => false,
+        // In WASI sandbox, assume readable/writable/executable based on file existence
+        PathCondition::Readable => true,
+        // WASI doesn't support sockets in the sandbox
+        PathCondition::Socket => false,
+        PathCondition::NonEmpty => metadata.len() > 0,
+        PathCondition::UserIdFlag => false,
+        PathCondition::Writable => true,
+        PathCondition::Executable => true,
     }
 }
 
