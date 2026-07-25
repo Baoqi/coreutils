@@ -5,27 +5,78 @@
 
 //! Check if a file is ordered
 
+#[cfg(not(target_os = "wasi"))]
+use crate::chunks::RecycledChunk;
 use crate::{
     GlobalSettings, SortError,
-    chunks::{self, Chunk, RecycledChunk},
+    chunks::{self, Chunk},
     compare_by, open,
 };
 use itertools::Itertools;
+#[cfg(not(target_os = "wasi"))]
 use std::{
-    cmp::Ordering,
-    ffi::OsStr,
-    io::Read,
     iter,
     sync::mpsc::{Receiver, SyncSender, sync_channel},
     thread,
 };
+use std::{cmp::Ordering, ffi::OsStr, io::Read};
 use uucore::error::UResult;
+
+/// Check if the file at `path` is ordered (WASI single-threaded variant).
+///
+/// Threads are not available on WASI, so instead of the chunked reader-thread
+/// pipeline we read the whole file into memory (mirroring the WASI `ext_sort`
+/// strategy) and check ordering in a single pass.
+///
+/// # Returns
+///
+/// The code we should exit with.
+#[cfg(target_os = "wasi")]
+pub fn check(path: &OsStr, settings: &GlobalSettings) -> UResult<()> {
+    let max_allowed_cmp = if settings.unique {
+        // If `unique` is enabled, the previous line must compare _less_ to the next one.
+        Ordering::Less
+    } else {
+        // Otherwise, the line previous line must compare _less or equal_ to the next one.
+        Ordering::Equal
+    };
+    let mut file = open(path)?;
+    let mut input = Vec::new();
+    file.read_to_end(&mut input)?;
+    if input.is_empty() {
+        return Ok(());
+    }
+    let separator: u8 = settings.line_ending.into();
+    let chunk = Chunk::try_new(input, |buffer| {
+        Ok::<_, Box<dyn uucore::error::UError>>(chunks::parse_into_chunk(
+            buffer, separator, settings,
+        ))
+    })?;
+    // Account for the first line, then report the 1-based line number of the
+    // second element of each out-of-order pair (same numbering as the
+    // threaded variant).
+    let mut line_idx = 1;
+    for (a, b) in chunk.lines().iter().tuple_windows() {
+        line_idx += 1;
+        if compare_by(a, b, settings, chunk.line_data(), chunk.line_data()) > max_allowed_cmp {
+            return Err(SortError::Disorder {
+                file: path.to_owned(),
+                line_number: line_idx,
+                line: String::from_utf8_lossy(b.line).into_owned(),
+                silent: settings.check_silent,
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
 
 /// Check if the file at `path` is ordered.
 ///
 /// # Returns
 ///
 /// The code we should exit with.
+#[cfg(not(target_os = "wasi"))]
 pub fn check(path: &OsStr, settings: &GlobalSettings) -> UResult<()> {
     let max_allowed_cmp = if settings.unique {
         // If `unique` is enabled, the previous line must compare _less_ to the next one.
@@ -99,6 +150,7 @@ pub fn check(path: &OsStr, settings: &GlobalSettings) -> UResult<()> {
 }
 
 /// The function running on the reader thread.
+#[cfg(not(target_os = "wasi"))]
 fn reader(
     mut file: Box<dyn Read + Send>,
     receiver: &Receiver<RecycledChunk>,

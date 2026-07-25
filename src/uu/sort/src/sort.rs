@@ -15,6 +15,9 @@ mod check;
 mod chunks;
 mod custom_str_cmp;
 mod ext_sort;
+// The merge machinery relies on a reader thread; on WASI (no threads) merge
+// mode falls back to the regular in-memory sort path in `exec`.
+#[cfg(not(target_os = "wasi"))]
 mod merge;
 mod numeric_str_cmp;
 mod tmp_dir;
@@ -1391,6 +1394,8 @@ pub(crate) fn fd_soft_limit() -> Option<usize> {
     target_os = "solaris",
     target_os = "illumos"
 ))]
+// On WASI the only caller (merge machinery) is compiled out.
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
 pub(crate) fn fd_soft_limit() -> Option<usize> {
     None
 }
@@ -1431,6 +1436,8 @@ pub(crate) fn current_open_fd_count() -> Option<usize> {
 }
 
 #[cfg(not(unix))]
+// On WASI the only caller (merge machinery) is compiled out.
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
 pub(crate) fn current_open_fd_count() -> Option<usize> {
     None
 }
@@ -2558,9 +2565,14 @@ fn exec(
     output: Output,
     tmp_dir: &mut TmpDirWrapper,
 ) -> UResult<()> {
+    // On WASI the threaded merge machinery is unavailable; merge mode (-m)
+    // falls back to the regular in-memory sort below, which produces
+    // equivalent output (merging is an optimization for pre-sorted inputs).
+    #[cfg(not(target_os = "wasi"))]
     if settings.merge {
-        merge::merge(files, settings, output, tmp_dir)
-    } else if settings.check {
+        return merge::merge(files, settings, output, tmp_dir);
+    }
+    if settings.check {
         if files.len() > 1 {
             Err(UUsageError::new(
                 2,

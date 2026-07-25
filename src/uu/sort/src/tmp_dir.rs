@@ -26,6 +26,9 @@ use crate::SortError;
 /// deleting the whole directory when `SIGINT` is received. Creating a second `TmpDirWrapper` will
 /// fail because `ctrlc::set_handler()` fails when there's already a handler.
 /// The directory is only created once the first file is requested.
+// On WASI the in-memory sort never requests temp files, so parts of this
+// wrapper are unused there.
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
 pub struct TmpDirWrapper {
     temp_dir: Option<TempDir>,
     parent_path: PathBuf,
@@ -96,6 +99,7 @@ fn ensure_signal_handler_installed(state: Arc<Mutex<HandlerRegistration>>) -> UR
 
 #[cfg(any(target_os = "redox", target_os = "wasi"))]
 #[allow(clippy::unnecessary_wraps)]
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn ensure_signal_handler_installed(_state: Arc<Mutex<HandlerRegistration>>) -> UResult<()> {
     Ok(())
 }
@@ -110,6 +114,7 @@ impl TmpDirWrapper {
         }
     }
 
+    #[cfg_attr(target_os = "wasi", allow(dead_code))]
     fn init_tmp_dir(&mut self) -> UResult<()> {
         assert!(self.temp_dir.is_none());
         assert_eq!(self.size, 0);
@@ -137,6 +142,7 @@ impl TmpDirWrapper {
         Ok(())
     }
 
+    #[cfg_attr(target_os = "wasi", allow(dead_code))]
     pub fn next_file(&mut self) -> UResult<(File, PathBuf)> {
         if self.temp_dir.is_none() {
             self.init_tmp_dir()?;
